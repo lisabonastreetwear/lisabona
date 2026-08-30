@@ -4,6 +4,7 @@ export interface AirtableOrderStatus {
   status?: string;
   updatedAt?: string;
   tracking?: string;
+  source?: "Pending" | "WTB" | "Legacy";
 }
 
 type AirtableResponse = {
@@ -22,7 +23,8 @@ export class AirtableClient {
     tableId: string,
     orderField: string,
     orderNumber: string,
-    fallbackStatus?: string
+    fallbackStatus?: string,
+    source?: AirtableOrderStatus["source"]
   ): Promise<AirtableOrderStatus | null> {
     const normalized = orderNumber.replace(/^#/, "").trim();
     const plain = formulaString(normalized);
@@ -42,7 +44,8 @@ export class AirtableClient {
     return {
       status: String(fields[this.config.AIRTABLE_STATUS_FIELD] ?? "") || fallbackStatus,
       updatedAt: String(fields[this.config.AIRTABLE_UPDATED_FIELD] ?? "") || undefined,
-      tracking: String(fields[this.config.AIRTABLE_TRACKING_FIELD] ?? "") || undefined
+      tracking: String(fields[this.config.AIRTABLE_TRACKING_FIELD] ?? "") || undefined,
+      source
     };
   }
 
@@ -52,13 +55,15 @@ export class AirtableClient {
         this.config.AIRTABLE_PENDING_TABLE_ID,
         this.config.AIRTABLE_PENDING_ORDER_FIELD,
         orderNumber,
-        "Pending / In Progress"
+        "Pending / In Progress",
+        "Pending"
       );
       if (pending) return pending;
       return this.findInTable(
         this.config.AIRTABLE_WTB_TABLE_ID,
         this.config.AIRTABLE_WTB_ORDER_FIELD,
         orderNumber,
+        "WTB",
         "WTB"
       );
     }
@@ -67,7 +72,9 @@ export class AirtableClient {
       return this.findInTable(
         this.config.AIRTABLE_TABLE_ID,
         this.config.AIRTABLE_ORDER_FIELD,
-        orderNumber
+        orderNumber,
+        undefined,
+        "Legacy"
       );
     }
     return null;

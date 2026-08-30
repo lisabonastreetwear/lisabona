@@ -4,10 +4,12 @@ import { getSetting, setSetting } from "./db.js";
 import { escapeHtml } from "./security.js";
 import type { Config } from "./config.js";
 import { integrationState } from "./config.js";
+import { ShopifyClient } from "./services/shopify.js";
+import { AirtableClient } from "./services/airtable.js";
 
 function page(title: string, content: string): string {
   return `<!doctype html><html lang="pt"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>
-  :root{font-family:Inter,system-ui,sans-serif;color:#17221d;background:#f4f7f5}body{margin:0}.wrap{max-width:980px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}nav a{margin-left:16px;color:#176b45}.card{background:white;border:1px solid #dce7e0;border-radius:14px;padding:20px;margin-bottom:18px;box-shadow:0 5px 20px #173d2910}h1,h2{margin-top:0}label{display:block;font-weight:650;margin:14px 0 6px}input,textarea{width:100%;box-sizing:border-box;padding:11px;border:1px solid #bdcdc4;border-radius:8px;font:inherit}textarea{min-height:110px}button{background:#176b45;color:white;border:0;border-radius:8px;padding:11px 16px;font-weight:700;cursor:pointer}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}.status{padding:10px;border-radius:8px;background:#eef5f1}.ok{color:#176b45}.bad{color:#a23c3c}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #e4ebe7}.muted{color:#65736b;font-size:.92rem}a{color:#176b45}</style></head><body><div class="wrap"><header><strong>WhatsApp Commerce Bot</strong><nav><a href="/admin">Painel</a><a href="/admin/faqs">FAQs</a><a href="/admin/conversations">Conversas</a></nav></header>${content}</div></body></html>`;
+  :root{font-family:Inter,system-ui,sans-serif;color:#17221d;background:#f4f7f5}body{margin:0}.wrap{max-width:980px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}nav a{margin-left:16px;color:#176b45}.card{background:white;border:1px solid #dce7e0;border-radius:14px;padding:20px;margin-bottom:18px;box-shadow:0 5px 20px #173d2910}h1,h2{margin-top:0}label{display:block;font-weight:650;margin:14px 0 6px}input,textarea{width:100%;box-sizing:border-box;padding:11px;border:1px solid #bdcdc4;border-radius:8px;font:inherit}textarea{min-height:110px}button{background:#176b45;color:white;border:0;border-radius:8px;padding:11px 16px;font-weight:700;cursor:pointer}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}.status{padding:10px;border-radius:8px;background:#eef5f1}.ok{color:#176b45}.bad{color:#a23c3c}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #e4ebe7}.muted{color:#65736b;font-size:.92rem}a{color:#176b45}</style></head><body><div class="wrap"><header><strong>WhatsApp Commerce Bot</strong><nav><a href="/admin">Painel</a><a href="/admin/integrations">Testes</a><a href="/admin/faqs">FAQs</a><a href="/admin/conversations">Conversas</a></nav></header>${content}</div></body></html>`;
 }
 
 export function createAdminRouter(db: Database, config: Config): Router {
@@ -44,6 +46,42 @@ export function createAdminRouter(db: Database, config: Config): Router {
       setSetting(db, "handoff_hours", Math.max(1, Math.min(168, Number(request.body.handoff_hours) || 24)))
     ]);
     response.redirect("/admin");
+  });
+
+  router.get("/integrations", async (_request, response) => {
+    const states = integrationState(config);
+    let shopifyResult = states.shopify ? "Por testar" : "Não configurada";
+    let shopifyClass = states.shopify ? "" : "bad";
+    if (states.shopify) {
+      try {
+        const name = await new ShopifyClient(config).testConnection();
+        shopifyResult = `Ligação válida — ${name}`;
+        shopifyClass = "ok";
+      } catch (error) {
+        shopifyResult = `Falhou — ${error instanceof Error ? error.message : String(error)}`;
+        shopifyClass = "bad";
+      }
+    }
+    response.send(page("Testes", `<h1>Testar integrações</h1><div class="card"><h2>Shopify</h2><p class="${shopifyClass}">${escapeHtml(shopifyResult)}</p></div><div class="card"><h2>Airtable</h2><p>Introduz apenas um número de encomenda de teste. Não são apresentados dados pessoais.</p><form method="post" action="/admin/integrations/airtable"><label>Número da encomenda</label><input name="order_number" placeholder="#1234" required><br><br><button>Procurar em Pending e WTB</button></form></div>`));
+  });
+
+  router.post("/integrations/airtable", async (request, response) => {
+    const orderNumber = String(request.body.order_number ?? "").trim();
+    let result: string;
+    let resultClass = "";
+    try {
+      const match = await new AirtableClient(config).findOrderStatus(orderNumber);
+      if (match) {
+        result = `Encontrada em ${match.source ?? "Airtable"}. Estado: ${match.status ?? "sem estado"}.`;
+        resultClass = "ok";
+      } else {
+        result = "Não encontrada em Pending nem WTB.";
+      }
+    } catch (error) {
+      result = `Falhou — ${error instanceof Error ? error.message : String(error)}`;
+      resultClass = "bad";
+    }
+    response.send(page("Resultado Airtable", `<h1>Resultado do teste</h1><div class="card"><p class="${resultClass}">${escapeHtml(result)}</p><p><a href="/admin/integrations">← Voltar aos testes</a></p></div>`));
   });
 
   router.get("/faqs", async (_request, response) => {

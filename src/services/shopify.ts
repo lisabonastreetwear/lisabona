@@ -33,6 +33,28 @@ export class ShopifyClient {
 
   constructor(private readonly config: Config) {}
 
+  private async graphql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+    const endpoint = `https://${this.config.SHOPIFY_STORE_DOMAIN}/admin/api/${this.config.SHOPIFY_API_VERSION}/graphql.json`;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": await this.accessToken()
+      },
+      body: JSON.stringify({ query, variables })
+    });
+    const payload = (await response.json()) as { data?: T; errors?: Array<{ message: string }> };
+    if (!response.ok || payload.errors?.length || !payload.data) {
+      throw new Error(`Shopify API ${response.status}: ${JSON.stringify(payload.errors ?? "resposta inválida")}`);
+    }
+    return payload.data;
+  }
+
+  async testConnection(): Promise<string> {
+    const data = await this.graphql<{ shop: { name: string } }>("query TestConnection { shop { name } }");
+    return data.shop.name;
+  }
+
   private async accessToken(): Promise<string> {
     if (this.config.SHOPIFY_ADMIN_ACCESS_TOKEN) return this.config.SHOPIFY_ADMIN_ACCESS_TOKEN;
     if (this.cachedToken && this.cachedToken.expiresAt > Date.now() + 5 * 60 * 1000) {
@@ -86,20 +108,10 @@ export class ShopifyClient {
         }
       }
     `;
-    const endpoint = `https://${this.config.SHOPIFY_STORE_DOMAIN}/admin/api/${this.config.SHOPIFY_API_VERSION}/graphql.json`;
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": await this.accessToken()
-      },
-      body: JSON.stringify({ query, variables: { search: `name:#${normalized}` } })
+    const payload = await this.graphql<NonNullable<ShopifyResponse["data"]>>(query, {
+      search: `name:#${normalized}`
     });
-    const payload = (await response.json()) as ShopifyResponse;
-    if (!response.ok || payload.errors?.length) {
-      throw new Error(`Shopify API ${response.status}: ${JSON.stringify(payload.errors)}`);
-    }
-    const order = payload.data?.orders?.nodes?.[0];
+    const order = payload.orders?.nodes?.[0];
     if (!order) return null;
     const tracking = order.fulfillments?.flatMap((item) => item.trackingInfo ?? [])[0];
     return {
