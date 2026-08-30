@@ -22,7 +22,11 @@ const schema = z.object({
   AIRTABLE_ACCESS_TOKEN: optionalSecret,
   AIRTABLE_BASE_ID: optionalSecret,
   AIRTABLE_TABLE_ID: optionalSecret,
-  AIRTABLE_ORDER_FIELD: z.string().default("Order Number"),
+  AIRTABLE_ORDER_FIELD: z.string().default("Shopify Order"),
+  AIRTABLE_PENDING_TABLE_ID: optionalSecret,
+  AIRTABLE_WTB_TABLE_ID: optionalSecret,
+  AIRTABLE_PENDING_ORDER_FIELD: z.string().default("Shopify Order"),
+  AIRTABLE_WTB_ORDER_FIELD: z.string().default("Shopify Order"),
   AIRTABLE_STATUS_FIELD: z.string().default("Status"),
   AIRTABLE_UPDATED_FIELD: z.string().default("Last Update"),
   AIRTABLE_TRACKING_FIELD: z.string().default("Tracking")
@@ -48,7 +52,10 @@ export function integrationState(config: Config) {
         (config.SHOPIFY_ADMIN_ACCESS_TOKEN || (config.SHOPIFY_CLIENT_ID && config.SHOPIFY_CLIENT_SECRET))
     ),
     airtable: Boolean(
-      config.AIRTABLE_ACCESS_TOKEN && config.AIRTABLE_BASE_ID && config.AIRTABLE_TABLE_ID
+      config.AIRTABLE_ACCESS_TOKEN &&
+        config.AIRTABLE_BASE_ID &&
+        (config.AIRTABLE_TABLE_ID ||
+          (config.AIRTABLE_PENDING_TABLE_ID && config.AIRTABLE_WTB_TABLE_ID))
     )
   };
 }

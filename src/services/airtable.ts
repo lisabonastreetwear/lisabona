@@ -18,10 +18,17 @@ function formulaString(value: string): string {
 export class AirtableClient {
   constructor(private readonly config: Config) {}
 
-  async findOrderStatus(orderNumber: string): Promise<AirtableOrderStatus | null> {
+  private async findInTable(
+    tableId: string,
+    orderField: string,
+    orderNumber: string,
+    fallbackStatus?: string
+  ): Promise<AirtableOrderStatus | null> {
     const normalized = orderNumber.replace(/^#/, "").trim();
-    const formula = `OR({${this.config.AIRTABLE_ORDER_FIELD}}=${formulaString(normalized)},{${this.config.AIRTABLE_ORDER_FIELD}}=${formulaString(`#${normalized}`)})`;
-    const table = encodeURIComponent(this.config.AIRTABLE_TABLE_ID);
+    const plain = formulaString(normalized);
+    const hash = formulaString(`#${normalized}`);
+    const formula = `OR({${orderField}}=${plain},{${orderField}}=${hash},CONCATENATE('',{${orderField}})=${plain},CONCATENATE('',{${orderField}})=${hash})`;
+    const table = encodeURIComponent(tableId);
     const url = new URL(`https://api.airtable.com/v0/${this.config.AIRTABLE_BASE_ID}/${table}`);
     url.searchParams.set("maxRecords", "1");
     url.searchParams.set("filterByFormula", formula);
@@ -33,9 +40,36 @@ export class AirtableClient {
     const fields = payload.records?.[0]?.fields;
     if (!fields) return null;
     return {
-      status: String(fields[this.config.AIRTABLE_STATUS_FIELD] ?? "") || undefined,
+      status: String(fields[this.config.AIRTABLE_STATUS_FIELD] ?? "") || fallbackStatus,
       updatedAt: String(fields[this.config.AIRTABLE_UPDATED_FIELD] ?? "") || undefined,
       tracking: String(fields[this.config.AIRTABLE_TRACKING_FIELD] ?? "") || undefined
     };
+  }
+
+  async findOrderStatus(orderNumber: string): Promise<AirtableOrderStatus | null> {
+    if (this.config.AIRTABLE_PENDING_TABLE_ID && this.config.AIRTABLE_WTB_TABLE_ID) {
+      const pending = await this.findInTable(
+        this.config.AIRTABLE_PENDING_TABLE_ID,
+        this.config.AIRTABLE_PENDING_ORDER_FIELD,
+        orderNumber,
+        "Pending / In Progress"
+      );
+      if (pending) return pending;
+      return this.findInTable(
+        this.config.AIRTABLE_WTB_TABLE_ID,
+        this.config.AIRTABLE_WTB_ORDER_FIELD,
+        orderNumber,
+        "WTB"
+      );
+    }
+
+    if (this.config.AIRTABLE_TABLE_ID) {
+      return this.findInTable(
+        this.config.AIRTABLE_TABLE_ID,
+        this.config.AIRTABLE_ORDER_FIELD,
+        orderNumber
+      );
+    }
+    return null;
   }
 }

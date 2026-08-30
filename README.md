@@ -56,8 +56,10 @@ Criar um Personal Access Token com acesso de leitura apenas à base necessária 
 
 - `AIRTABLE_ACCESS_TOKEN`
 - `AIRTABLE_BASE_ID`
-- `AIRTABLE_TABLE_ID`
-- nomes das quatro colunas configuráveis no `.env.example`
+- `AIRTABLE_PENDING_TABLE_ID` e `AIRTABLE_WTB_TABLE_ID`
+- nomes das colunas configuráveis no `.env.example`
+
+O conector procura primeiro na tabela Pending e, caso não encontre, na tabela WTB. A coluna de pesquisa pode ser configurada de forma independente para cada tabela.
 
 ## Deployment no Railway
 
