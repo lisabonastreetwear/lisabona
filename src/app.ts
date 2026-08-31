@@ -67,7 +67,11 @@ export function createApp(config: Config, db: Database) {
     }
   });
 
-  app.use("/admin", basicAuth(config.ADMIN_USERNAME, config.ADMIN_PASSWORD), createAdminRouter(db, config));
+  app.use(
+    "/admin",
+    basicAuth(config.ADMIN_USERNAME, config.ADMIN_PASSWORD),
+    createAdminRouter(db, config, dependencies)
+  );
 
   app.get("/", (_request, response) => response.redirect("/admin"));
   app.use((_request, response) => response.status(404).json({ error: "Not found" }));

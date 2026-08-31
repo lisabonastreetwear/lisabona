@@ -1,6 +1,6 @@
 import type { Database } from "../db.js";
 import { getSetting } from "../db.js";
-import type { IncomingMessage, MetaClient } from "../services/meta.js";
+import type { IncomingMessage } from "../services/meta.js";
 import type { ShopifyClient } from "../services/shopify.js";
 import { customerMatchesOrder } from "../services/shopify.js";
 import type { AirtableClient } from "../services/airtable.js";
@@ -21,7 +21,7 @@ type Conversation = {
 
 export interface BotDependencies {
   db: Database;
-  meta: MetaClient;
+  meta: { sendText(to: string, body: string): Promise<string | undefined> };
   shopify: ShopifyClient;
   airtable: AirtableClient;
   integrations: { meta: boolean; shopify: boolean; airtable: boolean };

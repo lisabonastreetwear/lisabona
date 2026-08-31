@@ -6,13 +6,16 @@ import type { Config } from "./config.js";
 import { integrationState } from "./config.js";
 import { ShopifyClient } from "./services/shopify.js";
 import { AirtableClient } from "./services/airtable.js";
+import { processIncomingMessage, type BotDependencies } from "./bot/processor.js";
 
 function page(title: string, content: string): string {
   return `<!doctype html><html lang="pt"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>
-  :root{font-family:Inter,system-ui,sans-serif;color:#17221d;background:#f4f7f5}body{margin:0}.wrap{max-width:980px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}nav a{margin-left:16px;color:#176b45}.card{background:white;border:1px solid #dce7e0;border-radius:14px;padding:20px;margin-bottom:18px;box-shadow:0 5px 20px #173d2910}h1,h2{margin-top:0}label{display:block;font-weight:650;margin:14px 0 6px}input,textarea{width:100%;box-sizing:border-box;padding:11px;border:1px solid #bdcdc4;border-radius:8px;font:inherit}textarea{min-height:110px}button{background:#176b45;color:white;border:0;border-radius:8px;padding:11px 16px;font-weight:700;cursor:pointer}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}.status{padding:10px;border-radius:8px;background:#eef5f1}.ok{color:#176b45}.bad{color:#a23c3c}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #e4ebe7}.muted{color:#65736b;font-size:.92rem}a{color:#176b45}</style></head><body><div class="wrap"><header><strong>WhatsApp Commerce Bot</strong><nav><a href="/admin">Painel</a><a href="/admin/integrations">Testes</a><a href="/admin/faqs">FAQs</a><a href="/admin/conversations">Conversas</a></nav></header>${content}</div></body></html>`;
+  :root{font-family:Inter,system-ui,sans-serif;color:#17221d;background:#f4f7f5}body{margin:0}.wrap{max-width:980px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}nav a{margin-left:16px;color:#176b45}.card{background:white;border:1px solid #dce7e0;border-radius:14px;padding:20px;margin-bottom:18px;box-shadow:0 5px 20px #173d2910}h1,h2{margin-top:0}label{display:block;font-weight:650;margin:14px 0 6px}input,textarea{width:100%;box-sizing:border-box;padding:11px;border:1px solid #bdcdc4;border-radius:8px;font:inherit}textarea{min-height:110px}button{background:#176b45;color:white;border:0;border-radius:8px;padding:11px 16px;font-weight:700;cursor:pointer}.secondary{background:#65736b}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}.status{padding:10px;border-radius:8px;background:#eef5f1}.ok{color:#176b45}.bad{color:#a23c3c}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #e4ebe7}.muted{color:#65736b;font-size:.92rem}a{color:#176b45}.chat{display:flex;flex-direction:column;gap:10px}.bubble{max-width:78%;padding:11px 14px;border-radius:12px;white-space:pre-wrap}.in{background:#fff3d8;align-self:flex-start}.out{background:#dff3e8;align-self:flex-end}</style></head><body><div class="wrap"><header><strong>WhatsApp Commerce Bot</strong><nav><a href="/admin">Painel</a><a href="/admin/simulator">Simulador</a><a href="/admin/integrations">Testes</a><a href="/admin/faqs">FAQs</a><a href="/admin/conversations">Conversas</a></nav></header>${content}</div></body></html>`;
 }
 
-export function createAdminRouter(db: Database, config: Config): Router {
+const simulatorWaId = "simulator-customer";
+
+export function createAdminRouter(db: Database, config: Config, botDependencies: BotDependencies): Router {
   const router = Router();
   router.use(Router().use((request, response, next) => {
     if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
@@ -82,6 +85,58 @@ export function createAdminRouter(db: Database, config: Config): Router {
       resultClass = "bad";
     }
     response.send(page("Resultado Airtable", `<h1>Resultado do teste</h1><div class="card"><p class="${resultClass}">${escapeHtml(result)}</p><p><a href="/admin/integrations">← Voltar aos testes</a></p></div>`));
+  });
+
+  router.get("/simulator", async (_request, response) => {
+    const [messages, conversation] = await Promise.all([
+      db.query<{ direction: string; body: string; created_at: Date }>(
+        `SELECT direction, body, created_at FROM (
+           SELECT 'in' AS direction, body, received_at AS created_at FROM inbound_messages WHERE wa_id = $1
+           UNION ALL
+           SELECT 'out' AS direction, body, created_at FROM outbound_messages WHERE wa_id = $1
+         ) history ORDER BY created_at ASC LIMIT 100`,
+        [simulatorWaId]
+      ),
+      db.query<{ state: string; human_handoff: boolean }>(
+        "SELECT state, human_handoff FROM conversations WHERE wa_id = $1",
+        [simulatorWaId]
+      )
+    ]);
+    const state = conversation.rows[0];
+    const history = messages.rows.length
+      ? messages.rows.map((item) => `<div class="bubble ${item.direction}">${escapeHtml(item.body ?? "")}</div>`).join("")
+      : '<p class="muted">Ainda não existem mensagens. Experimenta “Olá”, “estado da encomenda” ou “quero falar com uma pessoa”.</p>';
+    response.send(page("Simulador", `<h1>Simulador do chatbot</h1><div class="card"><p>Usa o mesmo motor do WhatsApp, Shopify e Airtable, mas <strong>não envia mensagens pela Meta</strong>.</p><p class="muted">Estado: ${escapeHtml(state?.state ?? "idle")} · Transferência humana: ${state?.human_handoff ? "ativa" : "não"}</p><div class="chat">${history}</div></div><div class="card"><form method="post" action="/admin/simulator"><label>Mensagem do cliente</label><textarea name="message" required autofocus></textarea><button>Enviar no simulador</button></form><br><form method="post" action="/admin/simulator/reset"><button class="secondary">Reiniciar conversa</button></form></div>`));
+  });
+
+  router.post("/simulator", async (request, response) => {
+    const text = String(request.body.message ?? "").trim();
+    if (!text) {
+      response.redirect("/admin/simulator");
+      return;
+    }
+    const simulatedDependencies: BotDependencies = {
+      ...botDependencies,
+      meta: {
+        async sendText() {
+          return `sim-${crypto.randomUUID()}`;
+        }
+      }
+    };
+    await processIncomingMessage(simulatedDependencies, {
+      id: `sim-${crypto.randomUUID()}`,
+      from: simulatorWaId,
+      displayName: "Cliente de teste",
+      type: "text",
+      text,
+      raw: { simulator: true, text }
+    });
+    response.redirect("/admin/simulator");
+  });
+
+  router.post("/simulator/reset", async (_request, response) => {
+    await db.query("DELETE FROM contacts WHERE wa_id = $1", [simulatorWaId]);
+    response.redirect("/admin/simulator");
   });
 
   router.get("/faqs", async (_request, response) => {
