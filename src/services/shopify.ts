@@ -135,8 +135,8 @@ export class ShopifyClient {
   async findProductMatches(input: string): Promise<ShopifyProductMatch[]> {
     if (!this.productCache || this.productCache.expiresAt < Date.now()) {
       const query = `
-        query ProductCatalogue {
-          products(first: 250, sortKey: TITLE) {
+        query ProductCatalogue($cursor: String) {
+          products(first: 100, after: $cursor, sortKey: TITLE) {
             nodes {
               title
               handle
@@ -144,12 +144,21 @@ export class ShopifyClient {
                 nodes { title sku availableForSale inventoryQuantity }
               }
             }
+            pageInfo { hasNextPage endCursor }
           }
         }
       `;
-      const data = await this.graphql<{ products: { nodes: Array<{ title: string; handle: string; variants: { nodes: Array<{ title: string; sku?: string; availableForSale: boolean; inventoryQuantity: number }> } }> } }>(query);
+      type ProductNode = { title: string; handle: string; variants: { nodes: Array<{ title: string; sku?: string; availableForSale: boolean; inventoryQuantity: number }> } };
+      const catalogue: ProductNode[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 20; page++) {
+        const data = await this.graphql<{ products: { nodes: ProductNode[]; pageInfo: { hasNextPage: boolean; endCursor?: string } } }>(query, { cursor });
+        catalogue.push(...data.products.nodes);
+        if (!data.products.pageInfo.hasNextPage || !data.products.pageInfo.endCursor) break;
+        cursor = data.products.pageInfo.endCursor;
+      }
       this.productCache = {
-        value: data.products.nodes.map((product) => ({ title: product.title, handle: product.handle, score: 0, variants: product.variants.nodes })),
+        value: catalogue.map((product) => ({ title: product.title, handle: product.handle, score: 0, variants: product.variants.nodes })),
         expiresAt: Date.now() + 5 * 60_000
       };
     }
