@@ -7,6 +7,7 @@ import { createAdminRouter } from "./admin.js";
 import { extractIncomingMessages, MetaClient } from "./services/meta.js";
 import { ShopifyClient } from "./services/shopify.js";
 import { AirtableClient } from "./services/airtable.js";
+import { SlackNotifier } from "./services/slack.js";
 import { processIncomingMessage } from "./bot/processor.js";
 
 export function createApp(config: Config, db: Database) {
@@ -29,6 +30,7 @@ export function createApp(config: Config, db: Database) {
     meta: new MetaClient(config),
     shopify: new ShopifyClient(config),
     airtable: new AirtableClient(config),
+    slack: new SlackNotifier(config),
     integrations: states
   };
 

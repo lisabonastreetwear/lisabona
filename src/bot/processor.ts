@@ -24,7 +24,8 @@ export interface BotDependencies {
   meta: { sendText(to: string, body: string): Promise<string | undefined> };
   shopify: ShopifyClient;
   airtable: AirtableClient;
-  integrations: { meta: boolean; shopify: boolean; airtable: boolean };
+  slack: { notifyEscalation(alert: { channel?: string; customerId: string; displayName?: string; reason: string; message?: string }): Promise<void> };
+  integrations: { meta: boolean; shopify: boolean; airtable: boolean; slack: boolean };
 }
 
 async function reply(deps: BotDependencies, waId: string, body: string): Promise<void> {
@@ -113,6 +114,13 @@ export async function processIncomingMessage(
       const hours = await getSetting(deps.db, "handoff_hours", 24);
       const until = new Date(Date.now() + Number(hours) * 60 * 60 * 1000);
       await updateConversation(deps.db, message.from, "human", {}, true, until);
+      await deps.slack.notifyEscalation({
+        channel: message.channel,
+        customerId: message.from,
+        displayName: message.displayName,
+        reason: "Pedido explícito de atendimento humano",
+        message: message.text
+      }).catch((error) => console.error("Falha ao notificar Slack", error));
       await reply(
         deps,
         message.from,

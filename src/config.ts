@@ -29,7 +29,8 @@ const schema = z.object({
   AIRTABLE_WTB_ORDER_FIELD: z.string().default("Shopify Order"),
   AIRTABLE_STATUS_FIELD: z.string().default("Status"),
   AIRTABLE_UPDATED_FIELD: z.string().default("Last Update"),
-  AIRTABLE_TRACKING_FIELD: z.string().default("Tracking")
+  AIRTABLE_TRACKING_FIELD: z.string().default("Tracking"),
+  SLACK_WEBHOOK_URL: optionalSecret
 });
 
 export type Config = z.infer<typeof schema>;
@@ -56,6 +57,7 @@ export function integrationState(config: Config) {
         config.AIRTABLE_BASE_ID &&
         (config.AIRTABLE_TABLE_ID ||
           (config.AIRTABLE_PENDING_TABLE_ID && config.AIRTABLE_WTB_TABLE_ID))
-    )
+    ),
+    slack: Boolean(config.SLACK_WEBHOOK_URL)
   };
 }

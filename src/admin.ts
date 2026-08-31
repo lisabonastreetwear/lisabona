@@ -127,6 +127,7 @@ export function createAdminRouter(db: Database, config: Config, botDependencies:
       id: `sim-${crypto.randomUUID()}`,
       from: simulatorWaId,
       displayName: "Cliente de teste",
+      channel: "simulator",
       type: "text",
       text,
       raw: { simulator: true, text }

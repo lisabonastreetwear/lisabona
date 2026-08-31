@@ -32,6 +32,7 @@ export interface IncomingMessage {
   type: string;
   text: string;
   displayName?: string;
+  channel?: "whatsapp" | "instagram" | "messenger" | "simulator";
   raw: unknown;
 }
 
@@ -79,6 +80,7 @@ export function extractIncomingMessages(payload: MetaWebhook): IncomingMessage[]
           type: message.type ?? "unknown",
           text,
           displayName: contactName,
+          channel: "whatsapp",
           raw: message
         });
       }
