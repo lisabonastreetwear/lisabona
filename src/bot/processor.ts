@@ -4,11 +4,13 @@ import type { IncomingMessage } from "../services/meta.js";
 import type { ShopifyClient } from "../services/shopify.js";
 import { customerMatchesOrder } from "../services/shopify.js";
 import type { AirtableClient } from "../services/airtable.js";
+import { matchCanonicalKnowledge } from "./knowledge.js";
 import {
   classifyIntent,
+  describeOrderItem,
   extractOrderNumber,
-  formatOrderStatus,
   identityLooksValid,
+  isCriticalOrderItem,
   normalizeText
 } from "./rules.js";
 
@@ -135,14 +137,14 @@ export async function processIncomingMessage(
         await reply(deps, message.from, "Não reconheci o número. Envia-o no formato #1234, por favor.");
         return;
       }
-      await updateConversation(deps.db, message.from, "awaiting_identity", { orderNumber });
-      await reply(deps, message.from, "Agora envia o email ou telefone usado na encomenda.");
+      await updateConversation(deps.db, message.from, "awaiting_identity", { orderNumber, identityAttempts: 0 });
+      await reply(deps, message.from, "Agora indique o email utilizado na compra, por favor.");
       return;
     }
 
     if (conversation.state === "awaiting_identity") {
       if (!identityLooksValid(message.text)) {
-        await reply(deps, message.from, "Envia um email válido ou o número de telefone da encomenda.");
+        await reply(deps, message.from, "Indique um endereço de email válido, por favor.");
         return;
       }
       if (!deps.integrations.shopify) {
@@ -153,27 +155,34 @@ export async function processIncomingMessage(
       const orderNumber = String(conversation.context.orderNumber ?? "");
       const order = await deps.shopify.findOrder(orderNumber);
       if (!order || !customerMatchesOrder(order, message.text, message.from)) {
-        await updateConversation(deps.db, message.from, "idle");
-        await reply(deps, message.from, "Não consegui confirmar esses dados. Confirma o número e o email/telefone ou escreve “pessoa”.");
+        const attempts = Number(conversation.context.identityAttempts ?? 0) + 1;
+        if (attempts < 2) {
+          await updateConversation(deps.db, message.from, "awaiting_identity", { orderNumber, identityAttempts: attempts });
+          await reply(deps, message.from, "Não consigo associar esse email a essa encomenda. Pode confirmar o email utilizado na compra?");
+          return;
+        }
+        const until = new Date(Date.now() + 86400000);
+        await updateConversation(deps.db, message.from, "human", {}, true, until);
+        await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Duas tentativas de validação de email falharam", message: `Encomenda #${orderNumber}` }).catch(console.error);
+        await reply(deps, message.from, "Não foi possível confirmar os dados. Encaminhei o pedido para a nossa equipa, que dará seguimento em horário útil.");
         return;
       }
-      const airtable = deps.integrations.airtable
-        ? await deps.airtable.findOrderStatus(orderNumber).catch(() => null)
-        : null;
+      const items = deps.integrations.airtable ? await deps.airtable.findOrderItems(orderNumber) : [];
       await updateConversation(deps.db, message.from, "idle");
-      await reply(
-        deps,
-        message.from,
-        formatOrderStatus({
-          orderName: order.name,
-          financialStatus: order.financialStatus,
-          fulfillmentStatus: order.fulfillmentStatus,
-          internalStatus: airtable?.status,
-          updatedAt: airtable?.updatedAt,
-          trackingNumber: order.trackingNumber ?? airtable?.tracking,
-          trackingUrl: order.trackingUrl
-        })
-      );
+      if (!items.length) {
+        const until = new Date(Date.now() + 86400000);
+        await updateConversation(deps.db, message.from, "human", {}, true, until);
+        await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Encomenda validada sem artigos encontrados no estado operacional", message: order.name }).catch(console.error);
+        await reply(deps, message.from, "Confirmei a encomenda, mas preciso que a nossa equipa verifique o estado atual. O pedido ficou registado para acompanhamento.");
+        return;
+      }
+      const response = [`Encontrei a encomenda ${order.name}. Estado por artigo:`, "", ...items.map(describeOrderItem)].join("\n");
+      await reply(deps, message.from, response);
+      await deps.airtable.appendChatbotNote(items, "Estado comunicado ao cliente pelo chatbot").catch((error) => console.error("Falha ao registar nota Airtable", error));
+      const critical = items.filter(isCriticalOrderItem);
+      if (critical.length) {
+        await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: `Encomenda com ${critical.length} artigo(s) que requer(em) acompanhamento`, message: order.name }).catch(console.error);
+      }
       return;
     }
 
@@ -183,6 +192,16 @@ export async function processIncomingMessage(
       return;
     }
 
+    const canonical = matchCanonicalKnowledge(message.text);
+    if (canonical) {
+      await reply(deps, message.from, canonical);
+      if (/defeito|danificado|artigo errado|produto errado/i.test(normalizeText(message.text))) {
+        const until = new Date(Date.now() + 86400000);
+        await updateConversation(deps.db, message.from, "human", {}, true, until);
+        await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Artigo com defeito, danificado ou incorreto", message: message.text }).catch(console.error);
+      }
+      return;
+    }
     const faq = await matchFaq(deps.db, message.text);
     if (faq) {
       await reply(deps, message.from, faq);

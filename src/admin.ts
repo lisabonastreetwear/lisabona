@@ -73,9 +73,11 @@ export function createAdminRouter(db: Database, config: Config, botDependencies:
     let result: string;
     let resultClass = "";
     try {
-      const match = await new AirtableClient(config).findOrderStatus(orderNumber);
-      if (match) {
-        result = `Encontrada em ${match.source ?? "Airtable"}. Estado: ${match.status ?? "sem estado"}.`;
+      const matches = await new AirtableClient(config).findOrderItems(orderNumber);
+      if (matches.length) {
+        const pending = matches.filter((item) => item.source === "Pending").length;
+        const wtb = matches.filter((item) => item.source === "WTB").length;
+        result = `Encontrados ${matches.length} artigo(s): ${pending} em Pending e ${wtb} em WTB.`;
         resultClass = "ok";
       } else {
         result = "Não encontrada em Pending nem WTB.";

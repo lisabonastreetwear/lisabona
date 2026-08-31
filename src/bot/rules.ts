@@ -24,8 +24,33 @@ export function extractOrderNumber(text: string): string | null {
 
 export function identityLooksValid(text: string): boolean {
   const value = text.trim();
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return true;
-  return value.replace(/\D/g, "").length >= 7;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+export function isCriticalOrderItem(item: { source: string; logisticsStatus?: string; orderStatus?: string; businessDays?: number; daysSinceProcessed?: number; tracking?: string }): boolean {
+  return item.logisticsStatus === "Delay / Issue" ||
+    item.orderStatus === "Product in Search - Seller not Found" ||
+    (item.source === "WTB" && (item.businessDays ?? 0) >= 15) ||
+    Boolean(item.tracking && (item.daysSinceProcessed ?? 0) >= 3);
+}
+
+export function describeOrderItem(item: { name: string; size?: string; source: string; origin?: string; logisticsStatus?: string; orderStatus?: string; businessDays?: number; daysSinceProcessed?: number; tracking?: string }): string {
+  const label = `${item.name}${item.size ? ` · Tamanho ${item.size}` : ""}`;
+  if (item.tracking) {
+    if ((item.daysSinceProcessed ?? 0) >= 3) return `• ${label} — vamos averiguar o envio junto da transportadora e atualizar ainda hoje. Rastreio: ${item.tracking}`;
+    return `• ${label} — já seguiu. Pode acompanhar aqui: ${item.tracking}`;
+  }
+  if (item.source === "WTB") {
+    if ((item.businessDays ?? 0) >= 15) return `• ${label} — o prazo de 15 dias úteis foi ultrapassado. A nossa equipa vai tratar consigo do cancelamento e reembolso.`;
+    if (item.orderStatus === "Deal Confirmed - Product to be Shipped") return `• ${label} — já está assegurado e a caminho das nossas instalações.`;
+    if (item.orderStatus === "Deal in Progress - Negotiation Ongoing") return `• ${label} — estamos a fechar os últimos detalhes e damos uma atualização concreta nas próximas 24 horas.`;
+    return `• ${label} — continuamos a localizar o artigo e a nossa equipa vai acompanhar o caso.`;
+  }
+  if (item.logisticsStatus === "Delay / Issue") return `• ${label} — detetámos um atraso e a nossa equipa vai verificar o caso.`;
+  if (item.origin === "In-Stock") return `• ${label} — está em stock e segue em 48 horas por correio expresso.`;
+  if (item.origin === "Consignment") return `• ${label} — está reservado e segue dentro de 48 horas úteis.`;
+  if (item.origin === "Pre-Order") return `• ${label} — está a ser assegurado junto do fornecedor; o prazo habitual é cerca de 5 dias úteis.`;
+  return `• ${label} — está em preparação. Receberá o rastreio por email assim que seguir.`;
 }
 
 export function formatOrderStatus(input: {

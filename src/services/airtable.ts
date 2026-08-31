@@ -1,82 +1,96 @@
 import type { Config } from "../config.js";
 
-export interface AirtableOrderStatus {
-  status?: string;
-  updatedAt?: string;
-  tracking?: string;
-  source?: "Pending" | "WTB" | "Legacy";
+export type AirtableSource = "Pending" | "WTB" | "Legacy";
+export interface AirtableOrderItem {
+  recordId: string; source: AirtableSource; name: string; sku?: string; size?: string;
+  origin?: string; logisticsStatus?: string; fulfillment?: string; status?: string;
+  orderStatus?: string; businessDays?: number; daysSinceProcessed?: number;
+  tracking?: string; updatedAt?: string; chatbotNotes?: string;
 }
-
-type AirtableResponse = {
-  records?: Array<{ fields?: Record<string, unknown> }>;
-  error?: unknown;
-};
+type AirtableRecord = { id: string; fields?: Record<string, unknown> };
+type AirtableResponse = { records?: AirtableRecord[]; error?: unknown };
 
 function formulaString(value: string): string {
   return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
+}
+function stringField(fields: Record<string, unknown>, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = fields[name];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+  }
+  return undefined;
+}
+function numberField(fields: Record<string, unknown>, ...names: string[]): number | undefined {
+  const value = stringField(fields, ...names);
+  if (!value) return undefined;
+  const parsed = Number(value.replace(",", ".").match(/-?\d+(?:\.\d+)?/)?.[0]);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 export class AirtableClient {
   constructor(private readonly config: Config) {}
 
-  private async findInTable(
-    tableId: string,
-    orderField: string,
-    orderNumber: string,
-    fallbackStatus?: string,
-    source?: AirtableOrderStatus["source"]
-  ): Promise<AirtableOrderStatus | null> {
+  private async request(url: URL, init: RequestInit = {}): Promise<AirtableResponse> {
+    const response = await fetch(url, {
+      ...init,
+      headers: { Authorization: `Bearer ${this.config.AIRTABLE_ACCESS_TOKEN}`, "Content-Type": "application/json", ...init.headers }
+    });
+    const payload = (await response.json()) as AirtableResponse;
+    if (!response.ok) throw new Error(`Airtable API ${response.status}: ${JSON.stringify(payload.error)}`);
+    return payload;
+  }
+
+  private async findAllInTable(tableId: string, orderField: string, orderNumber: string, source: AirtableSource): Promise<AirtableOrderItem[]> {
     const normalized = orderNumber.replace(/^#/, "").trim();
     const plain = formulaString(normalized);
     const hash = formulaString(`#${normalized}`);
     const formula = `OR({${orderField}}=${plain},{${orderField}}=${hash},CONCATENATE('',{${orderField}})=${plain},CONCATENATE('',{${orderField}})=${hash})`;
-    const table = encodeURIComponent(tableId);
-    const url = new URL(`https://api.airtable.com/v0/${this.config.AIRTABLE_BASE_ID}/${table}`);
-    url.searchParams.set("maxRecords", "1");
+    const url = new URL(`https://api.airtable.com/v0/${this.config.AIRTABLE_BASE_ID}/${encodeURIComponent(tableId)}`);
+    url.searchParams.set("pageSize", "100");
     url.searchParams.set("filterByFormula", formula);
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${this.config.AIRTABLE_ACCESS_TOKEN}` }
+    const payload = await this.request(url);
+    return (payload.records ?? []).map((record) => {
+      const fields = record.fields ?? {};
+      return {
+        recordId: record.id, source,
+        name: stringField(fields, "Name", "Product", "Product Name", "SKU") ?? "Artigo",
+        sku: stringField(fields, "SKU"), size: stringField(fields, "Size"),
+        origin: stringField(fields, "Origin"),
+        logisticsStatus: stringField(fields, "Logistics Status"),
+        fulfillment: stringField(fields, "Fulfillment"), status: stringField(fields, "Status"),
+        orderStatus: stringField(fields, "Order Status"),
+        businessDays: numberField(fields, "Business Days since Ordered"),
+        daysSinceProcessed: numberField(fields, "Days since Processed"),
+        tracking: stringField(fields, "Tracking (Customer)", this.config.AIRTABLE_TRACKING_FIELD),
+        updatedAt: stringField(fields, this.config.AIRTABLE_UPDATED_FIELD, "Last Modified", "Ordered At"),
+        chatbotNotes: stringField(fields, "Chatbot Notes")
+      };
     });
-    const payload = (await response.json()) as AirtableResponse;
-    if (!response.ok) throw new Error(`Airtable API ${response.status}: ${JSON.stringify(payload.error)}`);
-    const fields = payload.records?.[0]?.fields;
-    if (!fields) return null;
-    return {
-      status: String(fields[this.config.AIRTABLE_STATUS_FIELD] ?? "") || fallbackStatus,
-      updatedAt: String(fields[this.config.AIRTABLE_UPDATED_FIELD] ?? "") || undefined,
-      tracking: String(fields[this.config.AIRTABLE_TRACKING_FIELD] ?? "") || undefined,
-      source
-    };
   }
 
-  async findOrderStatus(orderNumber: string): Promise<AirtableOrderStatus | null> {
+  async findOrderItems(orderNumber: string): Promise<AirtableOrderItem[]> {
     if (this.config.AIRTABLE_PENDING_TABLE_ID && this.config.AIRTABLE_WTB_TABLE_ID) {
-      const pending = await this.findInTable(
-        this.config.AIRTABLE_PENDING_TABLE_ID,
-        this.config.AIRTABLE_PENDING_ORDER_FIELD,
-        orderNumber,
-        "Pending / In Progress",
-        "Pending"
-      );
-      if (pending) return pending;
-      return this.findInTable(
-        this.config.AIRTABLE_WTB_TABLE_ID,
-        this.config.AIRTABLE_WTB_ORDER_FIELD,
-        orderNumber,
-        "WTB",
-        "WTB"
-      );
+      const [pending, wtb] = await Promise.all([
+        this.findAllInTable(this.config.AIRTABLE_PENDING_TABLE_ID, this.config.AIRTABLE_PENDING_ORDER_FIELD, orderNumber, "Pending"),
+        this.findAllInTable(this.config.AIRTABLE_WTB_TABLE_ID, this.config.AIRTABLE_WTB_ORDER_FIELD, orderNumber, "WTB")
+      ]);
+      return [...pending, ...wtb];
     }
+    if (!this.config.AIRTABLE_TABLE_ID) return [];
+    return this.findAllInTable(this.config.AIRTABLE_TABLE_ID, this.config.AIRTABLE_ORDER_FIELD, orderNumber, "Legacy");
+  }
 
-    if (this.config.AIRTABLE_TABLE_ID) {
-      return this.findInTable(
-        this.config.AIRTABLE_TABLE_ID,
-        this.config.AIRTABLE_ORDER_FIELD,
-        orderNumber,
-        undefined,
-        "Legacy"
-      );
-    }
-    return null;
+  async appendChatbotNote(items: AirtableOrderItem[], summary: string): Promise<void> {
+    const stamp = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Lisbon" }).format(new Date());
+    await Promise.all(items.map(async (item) => {
+      const tableId = item.source === "Pending" ? this.config.AIRTABLE_PENDING_TABLE_ID
+        : item.source === "WTB" ? this.config.AIRTABLE_WTB_TABLE_ID : this.config.AIRTABLE_TABLE_ID;
+      if (!tableId) return;
+      const fieldId = item.source === "Pending" ? "fldo0xtBPTE6Bpcly"
+        : item.source === "WTB" ? "fldEeLaeKMpnx3q3M" : "Chatbot Notes";
+      const next = [item.chatbotNotes, `[${stamp}] Chatbot — ${summary}`].filter(Boolean).join("\n");
+      const url = new URL(`https://api.airtable.com/v0/${this.config.AIRTABLE_BASE_ID}/${encodeURIComponent(tableId)}/${item.recordId}`);
+      await this.request(url, { method: "PATCH", body: JSON.stringify({ fields: { [fieldId]: next } }) });
+    }));
   }
 }

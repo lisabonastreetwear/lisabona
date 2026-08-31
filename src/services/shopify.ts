@@ -126,12 +126,7 @@ export class ShopifyClient {
   }
 }
 
-export function customerMatchesOrder(order: ShopifyOrder, suppliedIdentity: string, whatsappId: string): boolean {
+export function customerMatchesOrder(order: ShopifyOrder, suppliedIdentity: string, _whatsappId?: string): boolean {
   const identity = suppliedIdentity.trim().toLowerCase();
-  if (identity.includes("@")) return order.email?.trim().toLowerCase() === identity;
-  const digits = identity.replace(/\D/g, "");
-  if (digits.length < 7) return false;
-  const orderPhone = order.phone?.replace(/\D/g, "") ?? "";
-  const waPhone = whatsappId.replace(/\D/g, "");
-  return Boolean(orderPhone && (orderPhone.endsWith(digits) || digits.endsWith(orderPhone))) || waPhone.endsWith(digits);
+  return identity.includes("@") && order.email?.trim().toLowerCase() === identity;
 }
