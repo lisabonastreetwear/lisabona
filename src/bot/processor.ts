@@ -2,7 +2,7 @@ import type { Database } from "../db.js";
 import { getSetting } from "../db.js";
 import type { IncomingMessage } from "../services/meta.js";
 import type { ShopifyClient } from "../services/shopify.js";
-import { customerMatchesOrder } from "../services/shopify.js";
+import { customerMatchesOrder, type ShopifyProductMatch } from "../services/shopify.js";
 import type { AirtableClient } from "../services/airtable.js";
 import { openSupportCase } from "../services/followups.js";
 import { matchCanonicalKnowledge } from "./knowledge.js";
@@ -13,8 +13,7 @@ import {
   extractOrderNumber,
   identityLooksValid,
   isCriticalOrderItem,
-  normalizeText,
-  parseStockRequest
+  normalizeText
 } from "./rules.js";
 
 type Conversation = {
@@ -66,6 +65,76 @@ async function matchFaq(db: Database, message: string): Promise<string | null> {
     result.rows.find((entry) => entry.keywords.some((keyword) => normalized.includes(normalizeText(keyword))))
       ?.answer ?? null
   );
+}
+
+function deadlineFrom(text: string): string | undefined {
+  return text.match(/\b\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]\d{2,4})?\b/)?.[0];
+}
+
+async function answerProductAvailability(
+  deps: BotDependencies,
+  message: IncomingMessage,
+  language: string,
+  product: ShopifyProductMatch,
+  variant: ShopifyProductMatch["variants"][number]
+): Promise<void> {
+  const size = /^(default title|one size|os|tamanho único|único)$/i.test(variant.title) ? undefined : variant.title;
+  const deadline = deadlineFrom(message.text);
+  await updateConversation(deps.db, message.from, "idle");
+  if (variant.inventoryQuantity > 0) {
+    const timing = "48 horas";
+    const label = product.title + (size ? ", tamanho " + size : "");
+    const answer = language === "en"
+      ? "Good news: " + label + " is in stock and can be dispatched within 48 hours."
+      : language === "es"
+        ? "Buenas noticias: " + label + " está en stock y puede enviarse en 48 horas."
+        : "Boas notícias: " + label + " está em stock e pode seguir em " + timing + ".";
+    await reply(deps, message.from, answer);
+  } else if (variant.availableForSale) {
+    const label = product.title + (size ? ", tamanho " + size : "");
+    const answer = language === "en"
+      ? label + " is available to order. The usual lead time is around 5 business days until it reaches our facilities; it is dispatched on the day it arrives."
+      : language === "es"
+        ? label + " está disponible bajo pedido. El plazo habitual es de unos 5 días laborables hasta que llegue a nuestras instalaciones; se envía el mismo día de su llegada."
+        : label + " está disponível por encomenda. O prazo habitual é de cerca de 5 dias úteis até dar entrada nas nossas instalações; segue para si no próprio dia em que chega.";
+    await reply(deps, message.from, answer);
+  } else {
+    await reply(deps, message.from, language === "en" ? "This item is not currently available. I have asked our team to check alternatives."
+      : language === "es" ? "Este artículo no está disponible actualmente. He pedido a nuestro equipo que compruebe alternativas."
+      : "Este artigo não está disponível neste momento. Pedi à nossa equipa que verifique alternativas.");
+    await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Produto Shopify indisponível; verificar alternativas", message: product.title }).catch(console.error);
+    await openSupportCase(deps.db, message.from, message.channel, "Alternativas para " + product.title);
+  }
+  if (deadline) {
+    await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Pedido de produto com data limite", message: product.title + " · " + deadline }).catch(console.error);
+    await openSupportCase(deps.db, message.from, message.channel, "Confirmar data limite para " + product.title + ": " + deadline);
+  }
+}
+
+async function handleNaturalProductSearch(deps: BotDependencies, message: IncomingMessage, language: string): Promise<void> {
+  const matches = await deps.shopify.findProductMatches(message.text).catch(() => []);
+  if (!matches.length) {
+    await updateConversation(deps.db, message.from, "awaiting_stock_details", { language });
+    await reply(deps, message.from, language === "en" ? "Which product are you looking for? You can write the model and colour naturally."
+      : language === "es" ? "¿Qué producto busca? Puede escribir el modelo y el color con naturalidad."
+      : "Que artigo procura? Pode escrever o modelo e a cor naturalmente.");
+    return;
+  }
+  const product = matches[0]!;
+  const availableVariants = product.variants.filter((variant) => variant.availableForSale);
+  const candidates = availableVariants.length ? availableVariants : product.variants;
+  const normalized = normalizeText(message.text);
+  const variant = candidates.length === 1 ? candidates[0]
+    : candidates.find((item) => normalizeText(item.title).split(/\s+/).every((token) => normalized.includes(token)));
+  if (!variant) {
+    await updateConversation(deps.db, message.from, "awaiting_stock_variant", { language, product });
+    const choices = candidates.slice(0, 12).map((item) => item.title).join(", ");
+    await reply(deps, message.from, language === "en" ? "I found " + product.title + ". Which size or variant do you want? " + choices
+      : language === "es" ? "He encontrado " + product.title + ". ¿Qué talla o variante desea? " + choices
+      : "Encontrei " + product.title + ". Que tamanho ou variante pretende? " + choices);
+    return;
+  }
+  await answerProductAvailability(deps, message, language, product, variant);
 }
 
 export async function processIncomingMessage(
@@ -192,38 +261,23 @@ export async function processIncomingMessage(
     }
 
     if (conversation.state === "awaiting_stock_details") {
-      const request = parseStockRequest(message.text);
       const language = String(conversation.context.language ?? "pt");
-      if (!request) {
-        const prompt = language === "en" ? "Please send: product | size | desired date (optional). Example: Nike Dunk Panda | 42 | 10/09"
-          : language === "es" ? "Indique: producto | talla | fecha deseada (opcional). Ejemplo: Nike Dunk Panda | 42 | 10/09"
-          : "Indique: artigo | tamanho | data pretendida (opcional). Exemplo: Nike Dunk Panda | 42 | 10/09";
-        await reply(deps, message.from, prompt);
+      await handleNaturalProductSearch(deps, message, language);
+      return;
+    }
+
+    if (conversation.state === "awaiting_stock_variant") {
+      const language = String(conversation.context.language ?? "pt");
+      const product = conversation.context.product as ShopifyProductMatch | undefined;
+      const normalized = normalizeText(message.text);
+      const variant = product?.variants.find((item) => normalizeText(item.title) === normalized || normalizeText(item.title).includes(normalized));
+      if (!product || !variant) {
+        await reply(deps, message.from, language === "en" ? "I did not recognise that variant. Please indicate one of the options shown."
+          : language === "es" ? "No he reconocido esa variante. Indique una de las opciones mostradas."
+          : "Não reconheci essa variante. Indique uma das opções apresentadas, por favor.");
         return;
       }
-      const stock = await deps.airtable.findAvailableStock(request.product, request.size).catch(() => []);
-      await updateConversation(deps.db, message.from, "idle");
-      if (stock.length) {
-        const ownStock = stock.some((item) => item.location === "LISABONA");
-        const answer = language === "en"
-          ? `Good news: ${request.product}, size ${request.size}, is available. It can be dispatched within ${ownStock ? "48 hours" : "48 business hours"}. Final delivery time depends on the carrier and is confirmed at checkout.`
-          : language === "es"
-            ? `Buenas noticias: ${request.product}, talla ${request.size}, está disponible. Puede enviarse en ${ownStock ? "48 horas" : "48 horas laborables"}. El plazo final depende del transportista y se confirma en el checkout.`
-            : `Boas notícias: ${request.product}, tamanho ${request.size}, está disponível. Pode seguir em ${ownStock ? "48 horas" : "48 horas úteis"}. O prazo final depende da transportadora e é confirmado no checkout.`;
-        await reply(deps, message.from, answer);
-        if (request.deadline) {
-          await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Pedido de stock com data limite para confirmação", message: `${request.product} · ${request.size} · ${request.deadline}` }).catch(console.error);
-          await openSupportCase(deps.db, message.from, message.channel, `Confirmar data limite: ${request.product} · ${request.size} · ${request.deadline}`);
-        }
-      } else {
-        const answer = language === "en" ? "I will check availability with our team and get back to you shortly, so you can decide with complete information."
-          : language === "es" ? "Voy a comprobar la disponibilidad con nuestro equipo y le responderemos en breve, para que pueda decidir con toda la información."
-          : "Vou verificar essa disponibilidade junto da nossa equipa e damos-lhe uma resposta em breve, para que possa decidir com toda a informação.";
-        await reply(deps, message.from, answer);
-        await updateConversation(deps.db, message.from, "human", { stockRequest: request }, true, new Date(Date.now() + 86400000));
-        await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Pedido de disponibilidade sem stock confirmado", message: `${request.product} · ${request.size}${request.deadline ? ` · até ${request.deadline}` : ""}` }).catch(console.error);
-        await openSupportCase(deps.db, message.from, message.channel, `Confirmar disponibilidade: ${request.product} · ${request.size}`);
-      }
+      await answerProductAvailability(deps, message, language, product, variant);
       return;
     }
 
@@ -235,11 +289,7 @@ export async function processIncomingMessage(
 
     if (intent === "stock") {
       const language = detectLanguage(message.text);
-      await updateConversation(deps.db, message.from, "awaiting_stock_details", { language });
-      const prompt = language === "en" ? "Please send the product, size and desired date (optional) in this format: Nike Dunk Panda | 42 | 10/09"
-        : language === "es" ? "Indique el producto, la talla y la fecha deseada (opcional) así: Nike Dunk Panda | 42 | 10/09"
-        : "Indique o artigo, o tamanho e a data pretendida (opcional) neste formato: Nike Dunk Panda | 42 | 10/09";
-      await reply(deps, message.from, prompt);
+      await handleNaturalProductSearch(deps, message, language);
       return;
     }
 

@@ -3,7 +3,7 @@ export type Intent = "menu" | "order" | "stock" | "faq" | "human" | "unknown";
 const HUMAN_TERMS = ["humano", "pessoa", "assistente", "apoio", "operador", "atendimento"];
 const ORDER_TERMS = ["encomenda", "pedido", "order", "tracking", "rastreio", "onde está"];
 const MENU_TERMS = ["menu", "inicio", "início", "olá", "ola", "bom dia", "boa tarde", "boa noite"];
-const STOCK_TERMS = ["em stock", "disponível", "disponivel", "receber até", "receber ate", "preciso para", "in stock", "available", "disponible", "necesito para"];
+const STOCK_TERMS = ["em stock", "disponível", "disponivel", "receber até", "receber ate", "preciso para", "têm", "tem este", "procuro", "à procura", "gostava de comprar", "in stock", "available", "looking for", "disponible", "necesito para", "busco"];
 
 export function normalizeText(text: string): string {
   return text.trim().toLocaleLowerCase("pt-PT");

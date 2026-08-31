@@ -9,6 +9,12 @@ export interface ShopifyOrder {
   trackingNumber?: string;
   trackingUrl?: string;
 }
+export interface ShopifyProductMatch {
+  title: string;
+  handle: string;
+  score: number;
+  variants: Array<{ title: string; sku?: string; availableForSale: boolean; inventoryQuantity: number }>;
+}
 
 interface ShopifyResponse {
   data?: {
@@ -30,6 +36,7 @@ interface ShopifyResponse {
 
 export class ShopifyClient {
   private cachedToken?: { value: string; expiresAt: number };
+  private productCache?: { value: ShopifyProductMatch[]; expiresAt: number };
 
   constructor(private readonly config: Config) {}
 
@@ -124,6 +131,52 @@ export class ShopifyClient {
       trackingUrl: tracking?.url
     };
   }
+
+  async findProductMatches(input: string): Promise<ShopifyProductMatch[]> {
+    if (!this.productCache || this.productCache.expiresAt < Date.now()) {
+      const query = `
+        query ProductCatalogue {
+          products(first: 250, sortKey: TITLE) {
+            nodes {
+              title
+              handle
+              variants(first: 100) {
+                nodes { title sku availableForSale inventoryQuantity }
+              }
+            }
+          }
+        }
+      `;
+      const data = await this.graphql<{ products: { nodes: Array<{ title: string; handle: string; variants: { nodes: Array<{ title: string; sku?: string; availableForSale: boolean; inventoryQuantity: number }> } }> } }>(query);
+      this.productCache = {
+        value: data.products.nodes.map((product) => ({ title: product.title, handle: product.handle, score: 0, variants: product.variants.nodes })),
+        expiresAt: Date.now() + 5 * 60_000
+      };
+    }
+    const wanted = searchTokens(input);
+    if (!wanted.length) return [];
+    return this.productCache.value
+      .map((product) => {
+        const source = `${product.title} ${product.handle} ${product.variants.map((variant) => variant.sku ?? "").join(" ")}`;
+        const haystack = new Set(searchTokens(source));
+        const compact = source.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase().replace(/[^a-z0-9]/g, "");
+        const matches = wanted.filter((token) => compact.includes(token) || [...haystack].some((candidate) =>
+          candidate.includes(token) || token.includes(candidate) ||
+          (candidate.length >= 5 && token.length >= 5 && candidate.slice(0, 4) === token.slice(0, 4))
+        ));
+        return { ...product, score: matches.length / wanted.length };
+      })
+      .filter((product) => product.score >= 0.45)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+  }
+}
+
+const SEARCH_STOP_WORDS = new Set(["a", "o", "os", "as", "um", "uma", "de", "do", "da", "e", "em", "tem", "têm", "este", "esta", "artigo", "produto", "disponivel", "disponível", "stock", "quero", "preciso", "para", "the", "is", "this", "in", "available", "quiero", "necesito", "disponible"]);
+function searchTokens(value: string): string[] {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, " ").split(/\s+/)
+    .filter((token) => token.length >= 2 && !SEARCH_STOP_WORDS.has(token));
 }
 
 export function customerMatchesOrder(order: ShopifyOrder, suppliedIdentity: string, _whatsappId?: string): boolean {

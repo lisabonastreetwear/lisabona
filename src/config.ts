@@ -25,8 +25,6 @@ const schema = z.object({
   AIRTABLE_ORDER_FIELD: z.string().default("Shopify Order"),
   AIRTABLE_PENDING_TABLE_ID: optionalSecret,
   AIRTABLE_WTB_TABLE_ID: optionalSecret,
-  AIRTABLE_STOCK_TABLE_ID: z.string().trim().default("tbl3VJBgDxVsWUZkv"),
-  AIRTABLE_CONSIGN_STOCK_TABLE_ID: z.string().trim().default("tblcAEP1QYR42wN7k"),
   AIRTABLE_PENDING_ORDER_FIELD: z.string().default("Shopify Order"),
   AIRTABLE_WTB_ORDER_FIELD: z.string().default("Shopify Order"),
   AIRTABLE_STATUS_FIELD: z.string().default("Status"),
