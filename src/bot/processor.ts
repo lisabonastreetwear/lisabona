@@ -4,14 +4,17 @@ import type { IncomingMessage } from "../services/meta.js";
 import type { ShopifyClient } from "../services/shopify.js";
 import { customerMatchesOrder } from "../services/shopify.js";
 import type { AirtableClient } from "../services/airtable.js";
+import { openSupportCase } from "../services/followups.js";
 import { matchCanonicalKnowledge } from "./knowledge.js";
 import {
   classifyIntent,
   describeOrderItem,
+  detectLanguage,
   extractOrderNumber,
   identityLooksValid,
   isCriticalOrderItem,
-  normalizeText
+  normalizeText,
+  parseStockRequest
 } from "./rules.js";
 
 type Conversation = {
@@ -173,6 +176,7 @@ export async function processIncomingMessage(
         const until = new Date(Date.now() + 86400000);
         await updateConversation(deps.db, message.from, "human", {}, true, until);
         await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Encomenda validada sem artigos encontrados no estado operacional", message: order.name }).catch(console.error);
+        await openSupportCase(deps.db, message.from, message.channel, "Encomenda sem estado operacional");
         await reply(deps, message.from, "Confirmei a encomenda, mas preciso que a nossa equipa verifique o estado atual. O pedido ficou registado para acompanhamento.");
         return;
       }
@@ -182,6 +186,43 @@ export async function processIncomingMessage(
       const critical = items.filter(isCriticalOrderItem);
       if (critical.length) {
         await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: `Encomenda com ${critical.length} artigo(s) que requer(em) acompanhamento`, message: order.name }).catch(console.error);
+        await openSupportCase(deps.db, message.from, message.channel, `Estado crítico na encomenda ${order.name}`);
+      }
+      return;
+    }
+
+    if (conversation.state === "awaiting_stock_details") {
+      const request = parseStockRequest(message.text);
+      const language = String(conversation.context.language ?? "pt");
+      if (!request) {
+        const prompt = language === "en" ? "Please send: product | size | desired date (optional). Example: Nike Dunk Panda | 42 | 10/09"
+          : language === "es" ? "Indique: producto | talla | fecha deseada (opcional). Ejemplo: Nike Dunk Panda | 42 | 10/09"
+          : "Indique: artigo | tamanho | data pretendida (opcional). Exemplo: Nike Dunk Panda | 42 | 10/09";
+        await reply(deps, message.from, prompt);
+        return;
+      }
+      const stock = await deps.airtable.findAvailableStock(request.product, request.size).catch(() => []);
+      await updateConversation(deps.db, message.from, "idle");
+      if (stock.length) {
+        const ownStock = stock.some((item) => item.location === "LISABONA");
+        const answer = language === "en"
+          ? `Good news: ${request.product}, size ${request.size}, is available. It can be dispatched within ${ownStock ? "48 hours" : "48 business hours"}. Final delivery time depends on the carrier and is confirmed at checkout.`
+          : language === "es"
+            ? `Buenas noticias: ${request.product}, talla ${request.size}, está disponible. Puede enviarse en ${ownStock ? "48 horas" : "48 horas laborables"}. El plazo final depende del transportista y se confirma en el checkout.`
+            : `Boas notícias: ${request.product}, tamanho ${request.size}, está disponível. Pode seguir em ${ownStock ? "48 horas" : "48 horas úteis"}. O prazo final depende da transportadora e é confirmado no checkout.`;
+        await reply(deps, message.from, answer);
+        if (request.deadline) {
+          await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Pedido de stock com data limite para confirmação", message: `${request.product} · ${request.size} · ${request.deadline}` }).catch(console.error);
+          await openSupportCase(deps.db, message.from, message.channel, `Confirmar data limite: ${request.product} · ${request.size} · ${request.deadline}`);
+        }
+      } else {
+        const answer = language === "en" ? "I will check availability with our team and get back to you shortly, so you can decide with complete information."
+          : language === "es" ? "Voy a comprobar la disponibilidad con nuestro equipo y le responderemos en breve, para que pueda decidir con toda la información."
+          : "Vou verificar essa disponibilidade junto da nossa equipa e damos-lhe uma resposta em breve, para que possa decidir com toda a informação.";
+        await reply(deps, message.from, answer);
+        await updateConversation(deps.db, message.from, "human", { stockRequest: request }, true, new Date(Date.now() + 86400000));
+        await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Pedido de disponibilidade sem stock confirmado", message: `${request.product} · ${request.size}${request.deadline ? ` · até ${request.deadline}` : ""}` }).catch(console.error);
+        await openSupportCase(deps.db, message.from, message.channel, `Confirmar disponibilidade: ${request.product} · ${request.size}`);
       }
       return;
     }
@@ -192,6 +233,16 @@ export async function processIncomingMessage(
       return;
     }
 
+    if (intent === "stock") {
+      const language = detectLanguage(message.text);
+      await updateConversation(deps.db, message.from, "awaiting_stock_details", { language });
+      const prompt = language === "en" ? "Please send the product, size and desired date (optional) in this format: Nike Dunk Panda | 42 | 10/09"
+        : language === "es" ? "Indique el producto, la talla y la fecha deseada (opcional) así: Nike Dunk Panda | 42 | 10/09"
+        : "Indique o artigo, o tamanho e a data pretendida (opcional) neste formato: Nike Dunk Panda | 42 | 10/09";
+      await reply(deps, message.from, prompt);
+      return;
+    }
+
     const canonical = matchCanonicalKnowledge(message.text);
     if (canonical) {
       await reply(deps, message.from, canonical);
@@ -199,6 +250,7 @@ export async function processIncomingMessage(
         const until = new Date(Date.now() + 86400000);
         await updateConversation(deps.db, message.from, "human", {}, true, until);
         await deps.slack.notifyEscalation({ channel: message.channel, customerId: message.from, displayName: message.displayName, reason: "Artigo com defeito, danificado ou incorreto", message: message.text }).catch(console.error);
+        await openSupportCase(deps.db, message.from, message.channel, "Artigo com defeito, danificado ou incorreto");
       }
       return;
     }

@@ -3,9 +3,11 @@ import { describe, it } from "node:test";
 import {
   classifyIntent,
   describeOrderItem,
+  detectLanguage,
   extractOrderNumber,
   formatOrderStatus,
-  identityLooksValid
+  identityLooksValid,
+  parseStockRequest
 } from "../src/bot/rules.js";
 import { customerMatchesOrder } from "../src/services/shopify.js";
 import { matchCanonicalKnowledge } from "../src/bot/knowledge.js";
@@ -16,6 +18,13 @@ describe("regras do chatbot", () => {
     assert.equal(classifyIntent("onde está a minha encomenda?"), "order");
     assert.equal(classifyIntent("quero falar com uma pessoa"), "human");
     assert.equal(classifyIntent("Olá"), "menu");
+    assert.equal(classifyIntent("Têm este artigo disponível?"), "stock");
+  });
+
+  it("deteta idioma e lê pedidos de stock estruturados", () => {
+    assert.equal(detectLanguage("Hello, is this available?"), "en");
+    assert.equal(detectLanguage("Hola, qué talla está disponible?"), "es");
+    assert.deepEqual(parseStockRequest("Nike Dunk Panda | 42 | 10/09"), { product: "Nike Dunk Panda", size: "42", deadline: "10/09" });
   });
 
   it("extrai números de encomenda", () => {

@@ -1,8 +1,9 @@
-export type Intent = "menu" | "order" | "faq" | "human" | "unknown";
+export type Intent = "menu" | "order" | "stock" | "faq" | "human" | "unknown";
 
 const HUMAN_TERMS = ["humano", "pessoa", "assistente", "apoio", "operador", "atendimento"];
 const ORDER_TERMS = ["encomenda", "pedido", "order", "tracking", "rastreio", "onde está"];
 const MENU_TERMS = ["menu", "inicio", "início", "olá", "ola", "bom dia", "boa tarde", "boa noite"];
+const STOCK_TERMS = ["em stock", "disponível", "disponivel", "receber até", "receber ate", "preciso para", "in stock", "available", "disponible", "necesito para"];
 
 export function normalizeText(text: string): string {
   return text.trim().toLocaleLowerCase("pt-PT");
@@ -12,9 +13,24 @@ export function classifyIntent(text: string): Intent {
   const normalized = normalizeText(text);
   if (normalized === "3" || HUMAN_TERMS.some((term) => normalized.includes(term))) return "human";
   if (normalized === "1" || ORDER_TERMS.some((term) => normalized.includes(term))) return "order";
+  if (STOCK_TERMS.some((term) => normalized.includes(term))) return "stock";
   if (normalized === "2" || normalized.includes("faq") || normalized.includes("pergunta")) return "faq";
   if (MENU_TERMS.some((term) => normalized === term || normalized.startsWith(`${term} `))) return "menu";
   return "unknown";
+}
+
+export type Language = "pt" | "en" | "es";
+export function detectLanguage(text: string): Language {
+  const normalized = normalizeText(text);
+  if (/\b(hello|hi|order|return|refund|shipping|available|size)\b/.test(normalized)) return "en";
+  if (/\b(hola|pedido|devolución|reembolso|envío|disponible|talla)\b/.test(normalized)) return "es";
+  return "pt";
+}
+
+export function parseStockRequest(text: string): { product: string; size: string; deadline?: string } | null {
+  const parts = text.split("|").map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  return { product: parts[0]!, size: parts[1]!, deadline: parts[2] };
 }
 
 export function extractOrderNumber(text: string): string | null {

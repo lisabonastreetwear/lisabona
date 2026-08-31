@@ -7,6 +7,10 @@ export interface AirtableOrderItem {
   orderStatus?: string; businessDays?: number; daysSinceProcessed?: number;
   tracking?: string; updatedAt?: string; chatbotNotes?: string;
 }
+export interface AirtableStockItem {
+  recordId: string; source: "Stock" | "Consign Stock"; name: string;
+  sku?: string; size?: string; status?: string; location?: string;
+}
 type AirtableRecord = { id: string; fields?: Record<string, unknown> };
 type AirtableResponse = { records?: AirtableRecord[]; error?: unknown };
 
@@ -78,6 +82,32 @@ export class AirtableClient {
     }
     if (!this.config.AIRTABLE_TABLE_ID) return [];
     return this.findAllInTable(this.config.AIRTABLE_TABLE_ID, this.config.AIRTABLE_ORDER_FIELD, orderNumber, "Legacy");
+  }
+
+  private async findStockInTable(tableId: string, source: AirtableStockItem["source"], query: string, size: string): Promise<AirtableStockItem[]> {
+    const url = new URL(`https://api.airtable.com/v0/${this.config.AIRTABLE_BASE_ID}/${encodeURIComponent(tableId)}`);
+    url.searchParams.set("pageSize", "100");
+    url.searchParams.set("filterByFormula", "{Status}='Available'");
+    const payload = await this.request(url);
+    const wanted = query.toLocaleLowerCase("pt-PT").trim();
+    const wantedSize = size.toLocaleLowerCase("pt-PT").trim();
+    return (payload.records ?? []).flatMap((record) => {
+      const fields = record.fields ?? {};
+      const name = stringField(fields, "Name") ?? "Artigo";
+      const sku = stringField(fields, "SKU");
+      const itemSize = stringField(fields, "Size");
+      const searchable = `${name} ${sku ?? ""}`.toLocaleLowerCase("pt-PT");
+      if (!searchable.includes(wanted) || (itemSize ?? "").toLocaleLowerCase("pt-PT") !== wantedSize) return [];
+      return [{ recordId: record.id, source, name, sku, size: itemSize, status: stringField(fields, "Status"), location: stringField(fields, "Stock Location") }];
+    });
+  }
+
+  async findAvailableStock(query: string, size: string): Promise<AirtableStockItem[]> {
+    const [stock, consign] = await Promise.all([
+      this.findStockInTable(this.config.AIRTABLE_STOCK_TABLE_ID, "Stock", query, size),
+      this.findStockInTable(this.config.AIRTABLE_CONSIGN_STOCK_TABLE_ID, "Consign Stock", query, size)
+    ]);
+    return [...stock, ...consign];
   }
 
   async appendChatbotNote(items: AirtableOrderItem[], summary: string): Promise<void> {

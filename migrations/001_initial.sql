@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS faq_entries (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS support_cases (
+  id bigserial PRIMARY KEY,
+  wa_id text NOT NULL REFERENCES contacts(wa_id) ON DELETE CASCADE,
+  channel text NOT NULL DEFAULT 'whatsapp',
+  reason text NOT NULL,
+  status text NOT NULL DEFAULT 'open',
+  followups_sent integer NOT NULL DEFAULT 0,
+  opened_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS support_cases_open_idx ON support_cases(status, opened_at);
+
 INSERT INTO app_settings (key, value) VALUES
   ('bot_enabled', 'true'::jsonb),
   ('welcome_message', '"Olá 👋 Bem-vindo! Como podemos ajudar?\n\n1 — Estado da encomenda\n2 — Perguntas frequentes\n3 — Falar com uma pessoa"'::jsonb),
