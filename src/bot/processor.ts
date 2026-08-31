@@ -68,7 +68,8 @@ async function matchFaq(db: Database, message: string): Promise<string | null> {
 }
 
 function deadlineFrom(text: string): string | undefined {
-  return text.match(/\b\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]\d{2,4})?\b/)?.[0];
+  return text.match(/\b\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]\d{2,4})?\b/)?.[0]
+    ?? text.match(/\b\d{1,2}\s+(?:de\s+)?(?:janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro|january|february|march|april|may|june|july|august|september|october|november|december|enero|febrero|marzo|mayo|junio|julio|septiembre|octubre|noviembre|diciembre)\b/i)?.[0];
 }
 
 async function answerProductAvailability(
@@ -315,6 +316,11 @@ export async function processIncomingMessage(
     }
     if (intent === "menu") {
       await reply(deps, message.from, await getSetting(deps.db, "welcome_message", "Como podemos ajudar?"));
+      return;
+    }
+    const productMatches = await deps.shopify.findProductMatches(message.text).catch(() => []);
+    if (productMatches.length) {
+      await handleNaturalProductSearch(deps, message, detectLanguage(message.text));
       return;
     }
     await reply(deps, message.from, await getSetting(deps.db, "fallback_message", "Não consegui perceber."));
